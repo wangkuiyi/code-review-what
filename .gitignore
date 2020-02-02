@@ -1,2 +1,6 @@
 *~
 *.o
+infer
+lda
+plda
+testdata
