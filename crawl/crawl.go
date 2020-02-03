@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,14 +23,22 @@ type Comment struct {
 type CommentList []Comment
 
 func main() {
-	url := "https://api.github.com/repos/sql-machine-learning/sqlflow/pulls/comments"
+	repo := flag.String("repo", "sql-machine-learning/sqlflow", "GitHub repo name in the format of org/repo")
+	user := flag.String("user", "", "GitHub account username.  Could be empty if don't authorize")
+	passwd := flag.String("passwd", "", "GitHub account password.  Could be empty if don't authorize")
+	flag.Parse()
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/comments", *repo)
 
 	for {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			log.Fatal(err)
 		}
-		req.SetBasicAuth(os.Getenv("GITHUB_USER"), os.Getenv("GITHUB_PASSWD"))
+
+		if len(*user) > 0 && len(*passwd) > 0 {
+			req.SetBasicAuth(*user, *passwd)
+		}
 
 		client := http.Client{}
 		resp, err := client.Do(req)
@@ -59,6 +68,6 @@ func main() {
 			break
 		}
 		url = links["next"]
-		fmt.Fprintf(os.Stderr, url)
+		fmt.Fprintf(os.Stderr, "%s\n", url)
 	}
 }
