@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -16,19 +15,26 @@ var (
 	betweenQuotes = regexp.MustCompile(`\"(.*)\"`)
 )
 
+type User struct {
+	Login string `json: login`
+}
+
 type Comment struct {
-	Body string `json: body`
+	Body       string `json: body`
+	User       `json: user`
+	CreateTime string `json:created_at`
+	UpdateTime string `json:updated_at`
 }
 
 type CommentList []Comment
 
 func main() {
-	repo := flag.String("repo", "sql-machine-learning/sqlflow", "GitHub repo name in the format of org/repo")
 	user := flag.String("user", "", "GitHub account username.  Could be empty if don't authorize")
 	passwd := flag.String("passwd", "", "GitHub account password.  Could be empty if don't authorize")
 	flag.Parse()
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/comments", *repo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/comments", flag.Arg(0))
+	log.Printf("Crawling %s", url)
 
 	for {
 		req, err := http.NewRequest("GET", url, nil)
@@ -61,13 +67,16 @@ func main() {
 			log.Fatal(err)
 		}
 		for _, c := range cl {
-			fmt.Println(c.Body)
+			comment := strings.Replace(
+				strings.Replace(c.Body, "\r\n", " ", -1), // \r\n is in-comment line break.
+				",", " ", -1)                             // CSV use commad to separate values.
+			fmt.Printf("%s,%s,%s,%s\n", c.User.Login, c.CreateTime, c.UpdateTime, comment)
 		}
 
 		if _, ok := links["next"]; !ok {
 			break
 		}
 		url = links["next"]
-		fmt.Fprintf(os.Stderr, "%s\n", url)
+		log.Printf("%s\n", url)
 	}
 }
