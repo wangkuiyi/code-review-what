@@ -1,9 +1,4 @@
 *~
 *.o
-infer
-lda
-plda
 testdata
-crawl
-segment
 
