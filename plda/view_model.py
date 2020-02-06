@@ -35,5 +35,9 @@ for i in range(len(map)):
     print
     print "TOPIC: ", i, sum[i]
     print
+    i = 0
     for key in x:
+        i = i + 1
+        if i > 10:
+            break
         print(key[0], key[1])
