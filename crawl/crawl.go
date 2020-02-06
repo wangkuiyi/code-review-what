@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -20,57 +21,63 @@ type User struct {
 }
 
 type Comment struct {
-	Body       string `json: body`
-	User       `json: user`
-	CreateTime string `json:created_at`
-	UpdateTime string `json:updated_at`
+	Body string `json: body`
+	User User   `json: user`
 }
 
-type CommentList []Comment
+type Pull struct {
+	Number int    `json: number,omitempty`
+	User   User   `json: user,omitempty`
+	Title  string `json: title,omitempty`
+	Body   string `json: body,omitempty`
+}
 
 func main() {
-	user := flag.String("user", "", "GitHub account username.  Could be empty if don't authorize")
-	passwd := flag.String("passwd", "", "GitHub account password.  Could be empty if don't authorize")
+	user := flag.String("user", os.Getenv("GITHUB_USER"), "GitHub username.")
+	passwd := flag.String("passwd", os.Getenv("GITHUB_PASSWD"), "GitHub passwd.")
+	pulls := flag.String("pulls", "pulls.csv", "Output CSV filename for pull requests.")
+	comments := flag.String("comments", "comments.csv", "Output CSV filename for code review comments.")
 	flag.Parse()
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/comments", flag.Arg(0))
+	f, e := os.Create(*pulls)
+	if e != nil {
+		log.Fatal(e)
+	}
+	defer f.Close()
+
+	ff, e := os.Create(*comments)
+	if e != nil {
+		log.Fatal(e)
+	}
+	defer ff.Close()
+
+	crawlPulls(flag.Arg(0), *user, *passwd, f, ff)
+}
+
+func crawlPulls(repo, user, passwd string, pulls, comments *os.File) {
+	url := listPullURL(repo)
 	log.Printf("Crawling %s", url)
 
+	client := http.Client{}
+
 	for {
-		req, err := http.NewRequest("GET", url, nil)
+		resp, err := client.Do(newReq(url, user, passwd))
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		if len(*user) > 0 && len(*passwd) > 0 {
-			req.SetBasicAuth(*user, *passwd)
-		}
+		links := parseHeaderLink(resp)
 
-		client := http.Client{}
-		resp, err := client.Do(req)
+		prs, err := decodePulls(resp)
 		if err != nil {
-			log.Fatal(err)
+			continue
 		}
 
-		headerLink := resp.Header["Link"][0]
-		links := map[string]string{}
-		for _, link := range strings.Split(headerLink, ",") {
-			ss := strings.Split(link, ";")
-			l := betweenAngles.FindStringSubmatch(ss[0])[1]
-			t := betweenQuotes.FindStringSubmatch(ss[1])[1]
-			links[t] = l
-		}
+		for _, pr := range prs {
+			fmt.Fprintf(pulls, "%d,%s,%s,%s\n", pr.Number,
+				escapeCSV(pr.User.Login), escapeCSV(pr.Title), escapeCSV(pr.Body))
 
-		var cl CommentList
-		err = json.NewDecoder(resp.Body).Decode(&cl)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, c := range cl {
-			comment := strings.Replace(
-				strings.Replace(c.Body, "\r\n", " ", -1), // \r\n is in-comment line break.
-				",", " ", -1)                             // CSV use commad to separate values.
-			fmt.Printf("%s,%s,%s,%s\n", c.User.Login, c.CreateTime, c.UpdateTime, comment)
+			crawlComments(pr.Number, repo, user, passwd, comments)
 		}
 
 		if _, ok := links["next"]; !ok {
@@ -79,4 +86,90 @@ func main() {
 		url = links["next"]
 		log.Printf("%s\n", url)
 	}
+}
+
+func crawlComments(number int, repo, user, passwd string, comments *os.File) {
+	url := listCommentsURL(repo, number)
+	log.Printf("    comment %s", url)
+
+	client := http.Client{}
+
+	for {
+		resp, err := client.Do(newReq(url, user, passwd))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		links := parseHeaderLink(resp)
+
+		cmts, err := decodeComments(resp)
+		if err != nil {
+			continue
+		}
+
+		for _, cmt := range cmts {
+			fmt.Fprintf(comments, "%d,%s,%s\n", number,
+				escapeCSV(cmt.User.Login), escapeCSV(cmt.Body))
+		}
+
+		if _, ok := links["next"]; !ok {
+			break
+		}
+		url = links["next"]
+		log.Printf("%s\n", url)
+	}
+}
+
+func listPullURL(repo string) string {
+	return fmt.Sprintf("https://api.github.com/repos/%s/pulls?state=all", repo)
+}
+
+func listCommentsURL(repo string, number int) string {
+	return fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d/comments", repo, number)
+}
+
+func newReq(url, user, passwd string) *http.Request {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if len(user) > 0 && len(passwd) > 0 {
+		req.SetBasicAuth(user, passwd)
+	}
+	return req
+}
+
+func parseHeaderLink(resp *http.Response) map[string]string {
+	links := map[string]string{}
+
+	if _, ok := resp.Header["Link"]; ok {
+		headerLink := resp.Header["Link"][0]
+
+		for _, link := range strings.Split(headerLink, ",") {
+			ss := strings.Split(link, ";")
+			l := betweenAngles.FindStringSubmatch(ss[0])[1]
+			t := betweenQuotes.FindStringSubmatch(ss[1])[1]
+			links[t] = l
+		}
+	}
+	return links
+}
+
+func decodePulls(resp *http.Response) ([]Pull, error) {
+	var prs []Pull
+	err := json.NewDecoder(resp.Body).Decode(&prs)
+	return prs, err
+}
+
+func decodeComments(resp *http.Response) ([]Comment, error) {
+	var cmts []Comment
+	err := json.NewDecoder(resp.Body).Decode(&cmts)
+	return cmts, err
+}
+
+func escapeCSV(value string) string {
+	return strings.Replace(
+		strings.Replace(value, ",", " ", -1), // CSV use ,
+		"\r\n", " ", -1)                      // GitHub use \r\n for multiline text
 }
